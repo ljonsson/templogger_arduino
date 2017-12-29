@@ -45,7 +45,7 @@ void setup() {
   if (Serial) {
     Serial.println("Connected to wifi");
     printWiFiStatus();
-    Serial.print("\nConnecting to server ... ");
+    Serial.print("\nConnecting to syslog server ... ");
   }
 
   client.connect(syslogServer,514);
