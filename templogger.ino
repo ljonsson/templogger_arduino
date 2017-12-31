@@ -1,26 +1,44 @@
 #include <SPI.h>
 #include <WiFi101.h>
 #include <TimeLib.h> 
-#include <WiFiUdp.h>
 #include <DHT.h>
-#include <TimeLib.h>
+#include <Ticker.h>
 #include "templogger.h"  // ssid[], pass[], syslogServer and ntpServer
 
-int status = WL_IDLE_STATUS;
+#define WIFI_OK 0
+#define WIFI_RECONNECTED 1
+#define SYSLOG_OK 0
+#define SYSLOG_RECONNECTED 1
+
+int dht_status = 0;
 int led = 13;
-int toggle = 0;
-int i = 0;
-const int timeZone = -4;
+bool ledState;
+int dht_counter;
 unsigned int localPort = 8888;
 float h, t, f, hic, hif;
+long rssi;  // WiFi signal strength
+float bat; 
+
+int syslog_status = SYSLOG_OK;
+int wifi_status = WIFI_OK;
 
 #define DHTPIN 6
+#define VBATPIN A7
 #define DHTTYPE DHT22
 
 WiFiClient client;
-WiFiUDP Udp;
-
 DHT dht(DHTPIN, DHTTYPE);
+
+void readDht();
+void readBat();
+void toggleLed();
+void sendToSyslog();
+void checkWifiConnectivity();
+
+Ticker readDhtTicker(readDht, 5000);                                // 5s
+Ticker readBatTicker(readBat, 5000);                                // 5s
+Ticker sendToSyslogTicker(sendToSyslog, 60000);                     // 1m
+Ticker toggleLedTicker(toggleLed, 1000);                            // .5s
 
 void setup() {
   //Configure pins for Adafruit ATWINC1500 Feather
@@ -31,101 +49,101 @@ void setup() {
   Serial.begin(9600);
   delay(5000);
   
-  if (Serial) { 
-    Serial.print("Attempting to connect to SSID: ");
-    Serial.println(ssid);
-  }
+  Serial.print("Attempting to connect to SSID: ");
+  Serial.println(ssid);
 
-  status = WiFi.begin(ssid, pass);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  if (Serial) {
-    Serial.println("Connected to wifi");
-    printWiFiStatus();
-    Serial.print("\nConnecting to syslog server ... ");
-  }
-
-  client.connect(syslogServer,514);
+  connectWiFi();
   
-  if (client.connected()) {
-    if (Serial) {
-      Serial.println("done");
-    }
-  }
+  Serial.println("Connected to wifi");
+  printWiFiStatus();
 
-  Udp.begin(localPort);
-  if (Serial) {
-    Serial.println("waiting for time sync");
-  }
-  setSyncProvider(getNtpTime);
+  connectSyslog();
+  
+  readDhtTicker.start();
+  readBatTicker.start();
+  sendToSyslogTicker.start();
+  toggleLedTicker.start();
+}
+
+void connectSyslog() {
+  if (! client.connected()) {
+    Serial.print("\nConnecting to syslog ");
+    client.connect(syslogServer,514);
+    if (client.connected()) {
+      Serial.println("done");
+      syslog_status = SYSLOG_RECONNECTED;
+    }
+  }  
+}
+
+void connectWiFi() {
+  Serial.print("\nWiFi status: ");
+  Serial.println(WiFi.status());
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print("\nConnecting to WiFi ");
+    WiFi.begin(ssid, pass);
+    Serial.print("\nWiFi status: ");
+    Serial.println(WiFi.status());
+    wifi_status = WIFI_RECONNECTED;
+    delay(1000);
+  }  
+  rssi = WiFi.RSSI();
 }
 
 void loop() {
-  toggleLed();
-
-  if (second()%5 == 0) {
-    // Poll the DHT every 5 seconds so that it doesn't go to sleep
-    status = readDHT();
-  }
-
-  if (second() == 0) {
-    // Save data only once a minute
-    sendToSyslog(status);
-  }
-  delay(1000);
+  readDhtTicker.update();
+  readBatTicker.update();
+  sendToSyslogTicker.update();
+  toggleLedTicker.update();
 }
 
-int readDHT() {
+void toggleLed() { 
+  // Activity indicator
+  digitalWrite(led, ledState);
+  ledState = !ledState;
+}
+
+void readDht() {
+  Serial.print("+");
   h = dht.readHumidity();
   t = dht.readTemperature();
   f = dht.readTemperature(true); // Farenheit
 
   if (isnan(h) || isnan(t) || isnan(f)) {
-    if (Serial) {
-      Serial.println("Failed to read from DHT sensor!");
-    }
-    return 1;
+    Serial.println("Failed to read from DHT sensor!");
+    dht_status = 1;
+    return;
   }
 
   hif = dht.computeHeatIndex(f, h);
   hic = dht.computeHeatIndex(t, h, false);
-  return 0;
+  dht_status = 0;
 }
 
-void toggleLed() { 
-  // Activity indicator
-  if (toggle == 0) {
-    digitalWrite(led, HIGH);
-    toggle = 1;
+void readBat() {
+  bat = analogRead(VBATPIN);
+  bat *= 2;
+  bat *= 3.3;
+  bat /= 1024;
+}
+
+void sendToSyslog() {
+  char syslog[200];
+
+  connectWiFi();
+  connectSyslog();
+    
+  if (!dht_status) {
+    sprintf(syslog, "<14>templogger: signal_dbm=%d bat_v=%.2f wifi_status=%d syslog_status=%d humidity=%.2f temperature_c=%.2f temperature_f=%.2f heatindex_c=%.2f heatindex_f=%.2f", rssi, bat, wifi_status, syslog_status, h, t, f, hic, hif);
+    wifi_status = WIFI_OK;
+    syslog_status = SYSLOG_OK;
   } else {
-    digitalWrite(led, LOW);
-    toggle = 0;     
+    sprintf(syslog, "<14>templogger: Failed to read DHT sensor data");
   }
-}
 
-void sendToSyslog(int status) {
-    if (Serial) {
-      Serial.println("Sending syslog data!");
-    }
-    if (!status) {
-      client.print("<14>templogger:");
-      client.print(" humidity=");
-      client.print(h);
-      client.print(" temperature_c=");
-      client.print(t);
-      client.print(" temperature_f=");
-      client.print(f);
-      client.print(" heatindex_c=");
-      client.print(hic);
-      client.print(" heatindex_f=");
-      client.print(hif);
-      client.println("");
-    } else {
-      client.println("<14>templogger: Failed to read DHT sensor data");
-    }
+  Serial.println("");
+  Serial.println(syslog);
+  client.println(syslog);
 }
 
 void printWiFiStatus() {
@@ -136,60 +154,9 @@ void printWiFiStatus() {
   Serial.print("IP Address: ");
   Serial.println(ip);
 
-  long rssi = WiFi.RSSI();
-  Serial.print("signal strength (RSSI):");
+  rssi = WiFi.RSSI();
+  Serial.print("signal strength (RSSI): ");
   Serial.print(rssi);
   Serial.println(" dBm");
 }
 
-/*-------- NTP code ----------*/
-
-const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
-byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming & outgoing packets
-
-time_t getNtpTime()
-{
-  while (Udp.parsePacket() > 0) ; // discard any previously received packets
-  Serial.println("Transmit NTP Request");
-  sendNTPpacket(timeServer);
-  uint32_t beginWait = millis();
-  while (millis() - beginWait < 1500) {
-    int size = Udp.parsePacket();
-    if (size >= NTP_PACKET_SIZE) {
-      Serial.println("Receive NTP Response");
-      Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
-      unsigned long secsSince1900;
-      // convert four bytes starting at location 40 to a long integer
-      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
-      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
-      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
-      secsSince1900 |= (unsigned long)packetBuffer[43];
-      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
-    }
-  }
-  Serial.println("No NTP Response :-(");
-  return 0; // return 0 if unable to get the time
-}
-
-// send an NTP request to the time server at the given address
-void sendNTPpacket(IPAddress &address)
-{
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12]  = 49;
-  packetBuffer[13]  = 0x4E;
-  packetBuffer[14]  = 49;
-  packetBuffer[15]  = 52;
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:                 
-  Udp.beginPacket(address, 123); //NTP requests are to port 123
-  Udp.write(packetBuffer, NTP_PACKET_SIZE);
-  Udp.endPacket();
-}

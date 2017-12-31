@@ -1,6 +1,7 @@
 # TempLogger
 
 * Time package: [https://github.com/PaulStoffregen/Time/releases/tag/v1.5](https://github.com/PaulStoffregen/Time/releases/tag/v1.5)
+* Ticker package: [https://github.com/sstaub/Ticker/archive/master.zip](https://github.com/sstaub/Ticker/archive/master.zip)
 
 templogger.h:
 ```
