@@ -18,6 +18,7 @@ unsigned int localPort = 8888;
 float h, t, f, hic, hif;
 long rssi;  // WiFi signal strength
 float bat; 
+byte mac[6];
 
 int syslog_status = SYSLOG_OK;
 int wifi_status = WIFI_OK;
@@ -88,6 +89,7 @@ void connectWiFi() {
     delay(1000);
   }  
   rssi = WiFi.RSSI();
+  WiFi.macAddress(mac);
 }
 
 void loop() {
@@ -128,13 +130,13 @@ void readBat() {
 }
 
 void sendToSyslog() {
-  char syslog[200];
+  char syslog[256];
 
   connectWiFi();
   connectSyslog();
     
   if (!dht_status) {
-    sprintf(syslog, "<14>templogger: signal_dbm=%d bat_v=%.2f wifi_status=%d syslog_status=%d humidity=%.2f temperature_c=%.2f temperature_f=%.2f heatindex_c=%.2f heatindex_f=%.2f", rssi, bat, wifi_status, syslog_status, h, t, f, hic, hif);
+    sprintf(syslog, "<14>templogger: mac=%02x:%02x:%02x:%02x:%02x:%02x signal_dbm=%d bat_v=%.2f wifi_status=%d syslog_status=%d humidity=%.2f temperature_c=%.2f temperature_f=%.2f heatindex_c=%.2f heatindex_f=%.2f", mac[5], mac[4], mac[3], mac[2], mac[1], mac[0], rssi, bat, wifi_status, syslog_status, h, t, f, hic, hif);
     wifi_status = WIFI_OK;
     syslog_status = SYSLOG_OK;
   } else {
